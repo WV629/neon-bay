@@ -1,80 +1,108 @@
-// The wanted system: stars rise when the player is seen committing crimes,
-// police cars spawn and chase, and the heat fades once the player is out of
-// sight long enough. Arrest ends the run if a cruiser pins the player down.
-import { nearestRoadPoint } from './city.js';
-import { sound } from './audio.js';
+// Neon Bay — the wanted system. Crimes raise heat, police cruisers spawn
+// and chase, and heat only cools when no cruiser can see the player.
+// Being pinned on foot ends in an arrest (Busted).
+import { makeRng, clamp, angleDiff } from './rng.js';
+import { makeCar } from './traffic.js';
+import { WORLD_W, WORLD_H, nearestStreet } from './city.js';
 
-export function raiseWanted(state, stars, reason) {
-  const before = state.wanted;
-  state.wanted = Math.min(5, state.wanted + stars);
-  state.wantedTimer = 0;
-  if (state.wanted > before) {
-    state.message = `WANTED ${'★'.repeat(state.wanted)} — ${reason}`;
-    state.messageTimer = 3;
-    if (state.wanted >= 2) state.effects.addShake(3);
-  }
-}
+export function makePolice(city, seed) {
+  const rng = makeRng(seed + 303);
+  const cruisers = [];
+  let wanted = 0;
+  let heat = 0; // 0..100, feeds the star display and decay
+  let quietT = 0; // seconds since the last crime or sighting
+  let sirenT = 0;
 
-export function updatePolice(state, dt) {
-  const playerPos = state.playerCar || state.player;
-  // Spawn cruisers up to the wanted level (capped at 4 active).
-  const wantCount = Math.min(4, state.wanted);
-  const police = state.cars.filter((c) => c.kind === 'police');
-  if (police.length < wantCount && state.wanted > 0) {
-    const spot = nearestRoadPoint(playerPos.x + (Math.random() - 0.5) * 900, playerPos.y + (Math.random() - 0.5) * 900);
-    const angle = Math.atan2(playerPos.y - spot.y, playerPos.x - spot.x);
-    state.cars.push({
-      kind: 'police', x: spot.x, y: spot.y, angle, speed: 0, r: 20,
-      color: '#1c2733', targetSpeed: 300, hp: 120, smoke: 0, siren: 0,
-    });
+  function starCount() { return Math.max(0, Math.min(5, Math.round(heat / 20))); }
+
+  function addCrime(amount, reason) {
+    heat = clamp(heat + amount, 0, 100);
+    quietT = 0;
+    wanted = starCount();
+    return reason;
   }
-  // Despawn cruisers that fell far behind once the heat is gone.
-  if (state.wanted === 0) {
-    for (let i = state.cars.length - 1; i >= 0; i--) {
-      const c = state.cars[i];
-      if (c.kind === 'police' && Math.hypot(c.x - playerPos.x, c.y - playerPos.y) > 900) state.cars.splice(i, 1);
+
+  function spawnCruiserNear(x, y) {
+    // Spawn just off-screen on a street, heading for the player.
+    const s = nearestStreet(x + (rng.chance(0.5) ? -1 : 1) * 520, y + (rng.chance(0.5) ? -1 : 1) * 420);
+    const c = makeCar(
+      clamp(s.x, 120, WORLD_W - 120), clamp(s.y, 120, WORLD_H - 220),
+      Math.atan2(y - s.y, x - s.x),
+      { color: '#1c2733', police: true, hp: 120 },
+    );
+    c.speed = 120;
+    c.targetSpeed = 260;
+    cruisers.push(c);
+    return c;
+  }
+
+  function syncCruisers(player) {
+    const want = starCount();
+    while (cruisers.length < want) spawnCruiserNear(player.x, player.y);
+    while (cruisers.length > want) {
+      // Retire the farthest cruiser first.
+      let far = 0, fd = -1;
+      cruisers.forEach((c, i) => {
+        const d = (c.x - player.x) ** 2 + (c.y - player.y) ** 2;
+        if (d > fd) { fd = d; far = i; }
+      });
+      cruisers.splice(far, 1);
     }
   }
-  let nearestPolice = Infinity;
-  for (const car of state.cars) {
-    if (car.kind !== 'police') continue;
-    const d = Math.hypot(car.x - playerPos.x, car.y - playerPos.y);
-    nearestPolice = Math.min(nearestPolice, d);
-    // Steer toward the player, with a little wobble so chases look alive.
-    const wantAngle = Math.atan2(playerPos.y - car.y, playerPos.x - car.x) + Math.sin(state.time * 1.7 + car.x) * 0.08;
-    let diff = wantAngle - car.angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    car.angle += Math.max(-2.4 * dt, Math.min(2.4 * dt, diff));
-    const target = state.wanted >= 3 ? 330 : 290;
-    car.speed += (target - car.speed) * dt * 0.9;
-    car.x += Math.cos(car.angle) * car.speed * dt;
-    car.y += Math.sin(car.angle) * car.speed * dt;
-    car.siren += dt;
-    // Ram the player's car; on foot, pin the player to arrest them.
-    if (d < 46) {
-      if (state.playerCar) {
-        state.playerCar.hp -= 14 * dt;
-        state.player.hp -= 2 * dt;
-        state.effects.addShake(2);
-        if (Math.random() < dt * 3) sound.crash();
+
+  return {
+    cruisers,
+    get wanted() { return starCount(); },
+    get heat() { return heat; },
+    get quietT() { return quietT; },
+    addCrime,
+    setHeat(v) { heat = clamp(v, 0, 100); wanted = starCount(); },
+    clear() { heat = 0; wanted = 0; quietT = 0; cruisers.length = 0; },
+    syncCruisers,
+    update(dt, player, onArrest, onRam) {
+      sirenT += dt;
+      const stars = starCount();
+      if (stars > 0) {
+        syncCruisers(player);
+        // Heat cools only while no cruiser is close enough to see the player.
+        const seen = cruisers.some((c) => (c.x - player.x) ** 2 + (c.y - player.y) ** 2 < 420 * 420);
+        if (seen) quietT = 0;
+        else {
+          quietT += dt;
+          if (quietT > 6) heat = clamp(heat - dt * 4, 0, 100);
+        }
       } else {
-        state.arrestTimer += dt;
-        state.message = `BUSTED IN ${Math.max(0, 2.5 - state.arrestTimer).toFixed(1)}s — RUN!`;
-        state.messageTimer = 0.5;
-        if (state.arrestTimer > 2.5) { state.busted = true; }
+        quietT += dt;
+        if (cruisers.length) cruisers.length = 0;
       }
-    } else {
-      state.arrestTimer = Math.max(0, state.arrestTimer - dt * 2);
-    }
-    if (car.hp < 40 && Math.random() < dt * 2) state.effects.smoke(car.x, car.y);
-  }
-  // Heat decays only when no cruiser can see the player.
-  if (state.wanted > 0 && nearestPolice > 650) {
-    state.wantedTimer += dt;
-    if (state.wantedTimer > 9) { state.wanted -= 1; state.wantedTimer = 0; state.message = 'Heat cooling off…'; state.messageTimer = 2; }
-  } else if (nearestPolice <= 650) {
-    state.wantedTimer = 0;
-  }
-  sound.setSiren(state.wanted > 0 && nearestPolice < 900);
+      for (const c of cruisers) {
+        const dx = player.x - c.x, dy = player.y - c.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const wantAngle = Math.atan2(dy, dx);
+        const diff = angleDiff(c.angle, wantAngle);
+        const turn = clamp(diff, -2.4 * dt, 2.4 * dt);
+        c.angle += turn;
+        // Ram speed: faster when lined up, slower when turning hard —
+        // and easing off close in, so a cruiser can pin the player on foot.
+        const nearPin = d < 130 ? 0.35 : 1;
+        const target = (230 + stars * 18 - Math.abs(diff) * 60) * nearPin;
+        c.speed += clamp(target - c.speed, -320 * dt, 170 * dt);
+        c.x += Math.cos(c.angle) * c.speed * dt;
+        c.y += Math.sin(c.angle) * c.speed * dt;
+        c.x = clamp(c.x, 60, WORLD_W - 60);
+        c.y = clamp(c.y, 60, WORLD_H - 60);
+        // Touching the player: ram their car, or pin them on foot.
+        if (d < 46) {
+          if (player.inCar) {
+            if (onRam) onRam(c, d);
+          } else if (c.speed < 150) {
+            if (onArrest) onArrest(c);
+          } else if (onRam) {
+            onRam(c, d);
+          }
+        }
+      }
+      return sirenT;
+    },
+  };
 }

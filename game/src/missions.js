@@ -1,185 +1,196 @@
-// The story: five missions for Rook, a getaway driver back in Neon Bay, with
-// objectives, dialogue, payouts and a finale. Each step is one clear check.
-import { spawnEnemies } from './combat.js';
-import { raiseWanted } from './police.js';
-import { sound } from './audio.js';
+// Neon Bay — the story. Five jobs for Mara Voss, the fixer who runs the
+// Bay from a back room above Club Neon Reef. Each mission is a small
+// state machine: an objective, a target point, a timer where the job
+// needs one, and dialogue that plays when it starts and ends.
+import { PLACES } from './city.js';
+import { fmtMoney } from './rng.js';
 
 export const MISSIONS = [
   {
-    id: 'first-wheels', title: '1 · First Wheels', giver: 'Mara Voss',
+    id: 1, title: 'Hot Wheels', payout: 400,
+    brief: 'Mara needs a ride. Steal any car and bring it to the Docks.',
     intro: [
-      'MARA: Rook. You\'re back in Neon Bay. Good — I need wheels, not memories.',
-      'MARA: Steal a car — any car — and bring it to the Docks. Don\'t get cute.',
+      ['MARA VOSS', 'New in town, huh? I run the jobs in Neon Bay. First one is easy.'],
+      ['MARA VOSS', 'Take any car off the street — press E next to one — and bring it to the Docks.'],
     ],
-    steps: [
-      { kind: 'inCar', text: 'Steal a car (walk up to one and press E)' },
-      { kind: 'reach', target: 'docks', radius: 90, text: 'Drive to the Docks' },
-    ],
-    payout: 400,
-    outro: ['MARA: Clean. The crew\'s talking about you already.', 'MARA: Next job pays better. Much better.'],
+    done: [['MARA VOSS', 'Clean work. The buyer paid. Four hundred is yours.']],
   },
   {
-    id: 'the-drop', title: '2 · The Drop', giver: 'Mara Voss',
+    id: 2, title: 'Bayfront Run', payout: 600, timeLimit: 100,
+    brief: 'A package for the club. Drive it to Club Neon Reef in 100 seconds.',
     intro: [
-      'MARA: A package for Club Neon Reef. The buyer waits 100 seconds, then walks.',
-      'MARA: Drive fast, drive straight, and don\'t stop for anyone.',
+      ['MARA VOSS', 'A package needs to reach Club Neon Reef. Fast. You have 100 seconds.'],
+      ['MARA VOSS', 'Get in a car and drive. Do not stop to admire the view.'],
     ],
-    steps: [
-      { kind: 'reach', target: 'club', radius: 90, text: 'Deliver the package to Club Neon Reef', timeLimit: 100 },
-    ],
-    payout: 700,
-    outro: ['MARA: Delivered. The Reef owes us now.', 'MARA: Word is Dario Kaine noticed. Watch your back.'],
+    done: [['MARA VOSS', 'Right on time. The club owes me one — and you six hundred.']],
   },
   {
-    id: 'heat', title: '3 · Heat on the Strip', giver: 'Mara Voss',
+    id: 3, title: 'Heat Check', payout: 900,
+    brief: 'The crew needs to know you can handle heat. Reach 2 stars, then lose the cops.',
     intro: [
-      'MARA: Kaine\'s crew needs a distraction, and you\'re it.',
-      'MARA: Make some noise — get the cops to 2 stars — then lose them. All of them.',
+      ['MARA VOSS', 'Cops in this town are bought, but they still chase. Prove you can shake them.'],
+      ['MARA VOSS', 'Get to 2 wanted stars, then lose the heat completely.'],
     ],
-    steps: [
-      { kind: 'wanted', value: 2, text: 'Raise your wanted level to ★★ (steal cars, hit things, shoot)' },
-      { kind: 'loseWanted', text: 'Lose the cops — get back to 0 stars' },
-    ],
-    payout: 900,
-    outro: ['MARA: Beautiful chaos. Kaine\'s boys walked right past the cops.', 'MARA: You\'re officially the loudest driver in Neon Bay.'],
+    done: [['MARA VOSS', 'Ghost. Not a single cruiser left. Nine hundred, and my respect.']],
   },
   {
-    id: 'brawl', title: '4 · Bayfront Brawl', giver: 'Mara Voss',
+    id: 4, title: 'Warehouse War', payout: 1500,
+    brief: 'Kaine’s crew moved into the warehouse. Take out all 3 gunmen.',
     intro: [
-      'MARA: Kaine sent his crew to the warehouse to lean on our dock workers.',
-      'MARA: Go to the warehouse. On foot. Settle it.',
+      ['MARA VOSS', 'Kaine’s crew took my warehouse. Three gunmen inside. Make it empty.'],
+      ['MARA VOSS', 'Aim with the mouse, click to shoot. Punch with F if they get close.'],
     ],
-    steps: [
-      { kind: 'reach', target: 'warehouse', radius: 110, text: 'Go to Kaine Warehouse (on foot works best)' },
-      { kind: 'spawnEnemies', count: 3, text: 'Take down all 3 of Kaine\'s crew' },
-      { kind: 'killAll', text: 'Take down all 3 of Kaine\'s crew' },
-    ],
-    payout: 1200,
-    outro: ['MARA: The docks are ours again. Kaine is furious.', 'MARA: One last job. The big one. Meet me at the bank.'],
+    done: [['MARA VOSS', 'Warehouse is mine again. Fifteen hundred — spend it loud.']],
   },
   {
-    id: 'big-score', title: '5 · The Big Score', giver: 'Mara Voss',
+    id: 5, title: 'Bayfront Bank', payout: 2500,
+    brief: 'The big one. Reach the bank, then escape at 3 stars to the safehouse.',
     intro: [
-      'MARA: Bayfront Bank. In, grab the cash, out. Kaine\'s crew tips the cops — expect heat.',
-      'MARA: When the vault\'s open, run for the safehouse. Don\'t stop for anything.',
+      ['MARA VOSS', 'Bayfront Bank. In, out, and gone before the cruisers box you in.'],
+      ['MARA VOSS', 'Get to the bank, grab the cash, then lose 3 stars at the safehouse.'],
     ],
-    steps: [
-      { kind: 'reach', target: 'bank', radius: 100, text: 'Get to Bayfront Bank' },
-      { kind: 'hold', target: 'bank', radius: 80, seconds: 3, text: 'Grab the cash — stay in the bank zone' },
-      { kind: 'reach', target: 'safehouse', radius: 100, text: 'Escape to the Safehouse (3★ heat!)' },
-    ],
-    payout: 2500,
-    outro: ['MARA: We did it, Rook. The whole bay is ours tonight.', '— STORY COMPLETE — Free roam Neon Bay. The city is yours.'],
+    done: [['MARA VOSS', 'Twenty-five hundred. Neon Bay is yours now, kid. Come back when you want more.']],
   },
 ];
 
-export function currentMission(state) {
-  return state.missionIndex < MISSIONS.length ? MISSIONS[state.missionIndex] : null;
-}
+export function makeMissions(game) {
+  let index = 0; // which mission is active (0-based); 5 means story done
+  let phase = 'toTarget'; // toTarget | escape | done
+  let timer = 0;
+  let reachedTwoStars = false;
+  let crewLeft = 0;
+  let failed = false;
+  let lastNag = -99; // last game-time a nag line was shown; nags are throttled
 
-export function currentStep(state) {
-  const m = currentMission(state);
-  return m ? m.steps[state.stepIndex] : null;
-}
-
-export function startMission(state, idx) {
-  const m = MISSIONS[idx];
-  if (!m) return;
-  state.missionIndex = idx; state.stepIndex = 0; state.stepTimer = 0; state.holdTimer = 0;
-  state.dialogue = { lines: m.intro, idx: 0, timer: 0 };
-  state.message = `${m.title} — ${m.giver}`;
-  state.messageTimer = 3.5;
-  state.objective = m.steps[0].text;
-}
-
-export function completeMission(state) {
-  const m = currentMission(state);
-  if (!m) return;
-  state.money += m.payout;
-  state.stats.missionsDone += 1;
-  state.effects.addText(state.player.x, state.player.y - 30, `+$${m.payout}`, '#2ecc71');
-  sound.missionDone();
-  state.dialogue = { lines: [...m.outro], idx: 0, timer: 0 };
-  state.missionIndex += 1; state.stepIndex = 0; state.stepTimer = 0; state.holdTimer = 0;
-  if (state.missionIndex < MISSIONS.length) {
-    const next = MISSIONS[state.missionIndex];
-    state.dialogue.lines.push(`${next.title} — ${next.giver}: ${next.intro[0]}`);
-    state.dialogue.lines.push(next.intro[1] || '');
-    state.objective = next.steps[0].text;
-  } else {
-    state.objective = 'Story complete — free roam Neon Bay';
-    state.storyComplete = true;
+  // A nag line (e.g. "still hot") must never use the blocking dialogue
+  // box: dialogue freezes the world, and a nag that re-fires while the
+  // player waits for heat to decay would freeze the game forever. Nags
+  // are floating hints instead, throttled to one every few seconds.
+  function nag(lines) {
+    if (game.time - lastNag < 4) return;
+    lastNag = game.time;
+    game.fx.floatText(game.player.x, game.player.y - 34, lines[0][1], '#facc15');
   }
-  saveProgress(state);
-}
 
-export function failMission(state, reason) {
-  state.message = `MISSION FAILED — ${reason}. Restarting mission…`;
-  state.messageTimer = 3;
-  state.enemies = [];
-  startMission(state, state.missionIndex);
-}
+  function current() { return MISSIONS[index] ?? null; }
+  function target() {
+    const m = current();
+    if (!m) return null;
+    if (m.id === 1) return { ...PLACES.docks, radius: 90 };
+    if (m.id === 2) return { ...PLACES.club, radius: 80 };
+    if (m.id === 3) return null;
+    if (m.id === 4) return { ...PLACES.warehouse, radius: 130 };
+    if (m.id === 5) {
+      return phase === 'escape'
+        ? { ...PLACES.safehouse, radius: 80 }
+        : { ...PLACES.bank, radius: 80 };
+    }
+    return null;
+  }
+  function statusLine() {
+    const m = current();
+    if (!m) return 'Story complete — Neon Bay is yours. Free roam!';
+    if (m.id === 3) {
+      if (!reachedTwoStars) return 'Reach 2 wanted stars';
+      return 'Now lose the heat completely';
+    }
+    if (m.id === 4) return `Defeat the warehouse crew (${crewLeft} left)`;
+    if (m.id === 5 && phase === 'escape') return 'Escape at 3 stars to the safehouse';
+    return m.brief;
+  }
 
-export function updateMissions(state, dt) {
-  const m = currentMission(state);
-  if (!m) return;
-  const step = m.steps[state.stepIndex];
-  if (!step) { completeMission(state); return; }
-  state.objective = step.text;
-  const target = step.target ? state.city.spots[step.target] : null;
-  const px = state.playerCar ? state.playerCar.x : state.player.x;
-  const py = state.playerCar ? state.playerCar.y : state.player.y;
-  switch (step.kind) {
-    case 'inCar':
-      if (state.playerCar) { state.stepIndex += 1; state.message = 'Got wheels. Move!'; state.messageTimer = 2; }
-      break;
-    case 'reach':
-      if (step.timeLimit) {
-        state.stepTimer += dt;
-        if (state.stepTimer > step.timeLimit) { failMission(state, 'the buyer walked away'); return; }
+  function startMission() {
+    const m = current();
+    if (!m) return;
+    phase = 'toTarget';
+    timer = m.timeLimit ?? 0;
+    failed = false;
+    reachedTwoStars = false;
+    crewLeft = 0;
+    game.say(m.intro);
+    if (m.id === 4) {
+      const made = game.combat.spawnCrew(PLACES.warehouse.x, PLACES.warehouse.y, 3);
+      crewLeft = made.length;
+    }
+    game.fx.floatText(game.player.x, game.player.y - 30, m.title, '#facc15');
+  }
+
+  function complete() {
+    const m = current();
+    if (!m) return;
+    game.player.money += m.payout;
+    game.audio.cash();
+    game.audio.mission();
+    game.say(m.done);
+    game.fx.floatText(game.player.x, game.player.y - 40, `+${fmtMoney(m.payout)}`, '#a3e635');
+    game.saveGame(true);
+    index++;
+    if (current()) startMission();
+    else game.say([['MARA VOSS', 'That is all five jobs. The city is yours — go enjoy it.']]);
+  }
+
+  function fail(reason) {
+    failed = true;
+    game.say([['MARA VOSS', reason]]);
+    game.audio.busted();
+    // Restart the same mission after the player reads the line.
+    setTimeout(() => { if (game.missions === api) startMission(); }, 1200);
+  }
+
+  const api = {
+    get index() { return index; },
+    get phase() { return phase; },
+    get timer() { return timer; },
+    get failed() { return failed; },
+    current, target, statusLine, startMission, complete,
+    setIndex(i) { index = Math.max(0, Math.min(MISSIONS.length, i)); },
+    setCrewLeft(n) { crewLeft = n; },
+    update(dt) {
+      const m = current();
+      if (!m) return;
+      const p = game.player;
+      if (m.timeLimit) {
+        timer -= dt;
+        if (timer <= 0) { fail('Too slow. The package went to someone else. Try again.'); return; }
       }
-      if (target && Math.hypot(target.x - px, target.y - py) < step.radius) {
-        state.stepIndex += 1; state.stepTimer = 0;
-        sound.pickup();
+      if (m.id === 3) {
+        if (!reachedTwoStars && game.police.wanted >= 2) reachedTwoStars = true;
+        if (reachedTwoStars && game.police.wanted === 0) { complete(); return; }
       }
-      break;
-    case 'hold':
-      if (state.playerCar && target && Math.hypot(target.x - px, target.y - py) < step.radius) {
-        state.message = 'Get out of the car (E) to grab the cash'; state.messageTimer = 0.5;
-        break;
+      if (m.id === 4) {
+        crewLeft = game.combat.enemies.filter((e) => !e.dead).length;
+        const near = Math.hypot(p.x - PLACES.warehouse.x, p.y - PLACES.warehouse.y) < 260;
+        if (near && crewLeft === 0) { complete(); return; }
       }
-      if (target && Math.hypot(target.x - px, target.y - py) < step.radius && !state.playerCar) {
-        state.holdTimer += dt;
-        state.message = `Grabbing cash… ${Math.max(0, step.seconds - state.holdTimer).toFixed(1)}s`;
-        state.messageTimer = 0.4;
-        if (state.holdTimer >= step.seconds) {
-          state.holdTimer = 0; state.stepIndex += 1;
-          raiseWanted(state, 3, 'the bank alarm tripped');
-          state.message = 'ALARM! Get to the safehouse!'; state.messageTimer = 3;
+      const t = target();
+      if (t && m.id !== 3 && m.id !== 4) {
+        const px = p.inCar ? p.car.x : p.x;
+        const py = p.inCar ? p.car.y : p.y;
+        if (Math.hypot(px - t.x, py - t.y) < t.radius) {
+          if (m.id === 1) {
+            if (!p.inCar) { nag([['MARA VOSS', 'Get back in the car — the Docks want the car, not you.']]); return; }
+            complete(); return;
+          }
+          if (m.id === 2) { complete(); return; }
+          if (m.id === 5) {
+            if (phase === 'toTarget') {
+              p.money += 0;
+              phase = 'escape';
+              game.police.setHeat(60); // 3 stars the moment the vault opens
+              game.say([
+                ['MARA VOSS', 'Vault is open. Cops are coming — 3 stars and climbing.'],
+                ['MARA VOSS', 'Lose them at the safehouse. Do not get caught.'],
+              ]);
+              game.audio.mission();
+              return;
+            }
+            if (game.police.wanted === 0) { complete(); return; }
+            nag([['MARA VOSS', 'Still hot. Shake the cruisers first, then come home.']]);
+            return;
+          }
         }
-      } else {
-        state.holdTimer = Math.max(0, state.holdTimer - dt);
       }
-      break;
-    case 'wanted':
-      if (state.wanted >= step.value) { state.stepIndex += 1; state.message = 'They\'re on you — now lose them!'; state.messageTimer = 2.5; }
-      break;
-    case 'loseWanted':
-      if (state.wanted === 0) { state.stepIndex += 1; }
-      break;
-    case 'spawnEnemies':
-      spawnEnemies(state, state.city.spots.warehouse.x, state.city.spots.warehouse.y, step.count);
-      state.stepIndex += 1;
-      break;
-    case 'killAll':
-      if (state.enemies.length === 0) { state.stepIndex += 1; }
-      break;
-    default:
-      state.stepIndex += 1;
-  }
-  if (state.stepIndex >= m.steps.length) completeMission(state);
+    },
+  };
+  return api;
 }
-
-// Save hook is injected by game.js to avoid a module cycle.
-export let saveProgress = () => {};
-export function setSaveHook(fn) { saveProgress = fn; }

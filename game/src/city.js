@@ -1,111 +1,181 @@
-// Neon Bay city generation: a road grid, building blocks, parks, a beach and
-// the waterfront, plus every named place the story uses. All positions come
-// from the seeded RNG, so the city is identical for a given seed.
-import { makeRng } from './rng.js';
+// Neon Bay — the city itself. A seeded 2560x1920 island grid: streets,
+// blocks of buildings, two parks, a beach and a bay along the south edge,
+// and the named places the story uses. Everything here is pure data;
+// rendering and collision both read these tables.
+import { makeRng, hash2 } from './rng.js';
 
 export const WORLD_W = 2560;
 export const WORLD_H = 1920;
-export const ROADS_V = [240, 560, 880, 1200, 1520, 1840, 2160];
-export const ROADS_H = [200, 440, 680, 920, 1160, 1400, 1640];
-export const ROAD_HALF = 42;
+export const ROAD_W = 64;
 
-const PALETTE = ['#5b6b8c', '#7a5b6e', '#4f7a6a', '#8c6b4f', '#6b5b8c', '#54677f', '#7f6b54', '#5f7f8c'];
+// Street centre lines. Blocks sit between them.
+export const STREETS_X = [160, 480, 800, 1120, 1440, 1760, 2080, 2400];
+export const STREETS_Y = [160, 480, 800, 1120, 1440, 1760];
+
+export const PLACES = {
+  safehouse:  { name: 'Safehouse',        x: 300,  y: 300,  label: 'SAFEHOUSE' },
+  docks:      { name: 'The Docks',        x: 2140, y: 1690, label: 'THE DOCKS' },
+  club:       { name: 'Club Neon Reef',   x: 800,  y: 480,  label: 'CLUB NEON REEF' },
+  warehouse:  { name: 'Kaine Warehouse',  x: 1820, y: 1180, label: 'KAINE WAREHOUSE' },
+  bank:       { name: 'Bayfront Bank',    x: 1120, y: 800,  label: 'BAYFRONT BANK' },
+  hospital:   { name: 'St. Marina Hospital', x: 480, y: 1440, label: 'ST. MARINA HOSPITAL' },
+  square:     { name: 'Bay Square',       x: 1280, y: 960,  label: 'BAY SQUARE' },
+  beach:      { name: 'Neon Beach',       x: 1280, y: 1830, label: 'NEON BEACH' },
+};
+
+const PALETTES = [
+  ['#3a4a6b', '#4a5a7d', '#2e3d5c'],
+  ['#6b4a5e', '#7d5a6e', '#54404e'],
+  ['#4a6b52', '#5a7d63', '#3d5c46'],
+  ['#6b5a3a', '#7d6c4a', '#54452e'],
+  ['#54486b', '#655a7d', '#453d5c'],
+];
 
 export function buildCity(seed) {
   const rng = makeRng(seed);
   const buildings = [];
   const parks = [];
-  for (let vi = 0; vi < ROADS_V.length - 1; vi++) {
-    for (let hi = 0; hi < ROADS_H.length - 1; hi++) {
-      const x0 = ROADS_V[vi] + 56, x1 = ROADS_V[vi + 1] - 56;
-      const y0 = ROADS_H[hi] + 56, y1 = ROADS_H[hi + 1] - 56;
-      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-      if (cx > 2200) continue; // beach strip, no buildings
-      if (Math.abs(cx - 1200) < 200 && Math.abs(cy - 920) < 140) { parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }); continue; } // Bay Square
-      if (rng.chance(0.13)) { parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }); continue; }
-      const w = (x1 - x0) * rng.range(0.55, 0.82);
-      const h = (y1 - y0) * rng.range(0.55, 0.82);
-      buildings.push({
-        x: cx - w / 2, y: cy - h / 2, w, h,
-        color: rng.pick(PALETTE), roof: rng.pick(['#2e3440', '#3d4454', '#4a3a32']),
-        tall: rng.chance(0.3), name: '',
-      });
+  const trees = [];
+  const lamps = [];
+
+  // Beach + bay along the south edge.
+  const bay = { x: 0, y: 1808, w: WORLD_W, h: WORLD_H - 1808 };
+  const beach = { x: 0, y: 1744, w: WORLD_W, h: 64 };
+
+  // Two parks: Bay Square in the middle, Marina Green in the south-west.
+  parks.push({ x: 1184, y: 864, w: 192, h: 192, name: 'Bay Square' });
+  parks.push({ x: 352, y: 1504, w: 192, h: 176, name: 'Marina Green' });
+
+  // Buildings fill each block between streets. A block is skipped when a
+  // park or a named place sits on it, and sometimes split into two towers.
+  const isPark = (x, y, w, h) => parks.some((p) => x < p.x + p.w && x + w > p.x && y < p.y + p.h && y + h > p.y);
+  const nearPlace = (cx, cy) => Object.values(PLACES).some((p) => Math.abs(p.x - cx) < 150 && Math.abs(p.y - cy) < 150);
+
+  let id = 0;
+  for (let ix = 0; ix < STREETS_X.length - 1; ix++) {
+    for (let iy = 0; iy < STREETS_Y.length - 1; iy++) {
+      const bx = STREETS_X[ix] + ROAD_W / 2 + 14;
+      const by = STREETS_Y[iy] + ROAD_W / 2 + 14;
+      const bw = STREETS_X[ix + 1] - STREETS_X[ix] - ROAD_W - 28;
+      const bh = STREETS_Y[iy + 1] - STREETS_Y[iy] - ROAD_W - 28;
+      if (by + bh > 1730) continue; // beach strip stays open
+      if (isPark(bx, by, bw, bh)) continue;
+      if (nearPlace(bx + bw / 2, by + bh / 2)) continue;
+      const pal = rng.pick(PALETTES);
+      const tall = rng.chance(0.3);
+      const split = rng.chance(0.45) && bw > 170;
+      const mk = (x, y, w, h) => {
+        buildings.push({
+          id: id++, x, y, w, h,
+          color: rng.pick(pal),
+          roof: rng.pick(['#232c3f', '#2c2430', '#1f2c26', '#33291f']),
+          hgt: tall ? rng.int(3, 6) : rng.int(1, 3),
+          neon: rng.chance(0.35),
+          neonColor: rng.pick(['#ff2e88', '#22d3ee', '#facc15', '#a3e635', '#c084fc']),
+          seed: rng.int(1, 99999),
+        });
+      };
+      if (split) {
+        const cut = bw * rng.range(0.42, 0.58);
+        mk(bx, by, cut - 8, bh);
+        mk(bx + cut + 8, by, bw - cut - 8, bh);
+      } else {
+        mk(bx, by, bw, bh);
+      }
     }
   }
-  // Named places sit on roads/plazas so the player can always reach them.
-  const spots = {
-    spawn: { x: 560, y: 860, name: 'Safehouse' },
-    safehouse: { x: 600, y: 880, name: 'Safehouse — Rook\'s flat' },
-    docks: { x: 300, y: 1520, name: 'The Docks' },
-    club: { x: 1520, y: 700, name: 'Club Neon Reef' },
-    warehouse: { x: 2000, y: 1520, name: 'Kaine Warehouse' },
-    bank: { x: 1200, y: 470, name: 'Bayfront Bank' },
-    hospital: { x: 880, y: 1160, name: 'St. Marina Hospital' },
-    square: { x: 1200, y: 920, name: 'Bay Square' },
-    beach: { x: 2280, y: 920, name: 'Neon Beach' },
+
+  // Named-place buildings: solid landmarks with their own colours.
+  const landmark = (place, w, h, color, neonColor) => {
+    buildings.push({
+      id: id++, x: place.x - w / 2, y: place.y - h / 2, w, h,
+      color, roof: '#1c2433', hgt: 2, neon: true, neonColor,
+      seed: 777, landmark: place.name,
+    });
   };
-  const parkedSpots = [];
-  for (let i = 0; i < 46; i++) {
-    const vertical = rng.chance(0.5);
-    if (vertical) {
-      const x = rng.pick(ROADS_V) + (rng.chance(0.5) ? 26 : -26);
-      const y = rng.range(120, WORLD_H - 120);
-      parkedSpots.push({ x, y, angle: rng.chance(0.5) ? Math.PI / 2 : -Math.PI / 2 });
-    } else {
-      const y = rng.pick(ROADS_H) + (rng.chance(0.5) ? 26 : -26);
-      const x = rng.range(120, WORLD_W - 220);
-      parkedSpots.push({ x, y, angle: rng.chance(0.5) ? 0 : Math.PI });
+  landmark(PLACES.bank, 150, 110, '#7d6c2e', '#facc15');
+  landmark(PLACES.club, 170, 120, '#5e2a4d', '#ff2e88');
+  landmark(PLACES.warehouse, 200, 130, '#4d4436', '#fb923c');
+  landmark(PLACES.hospital, 180, 130, '#dfe7ea', '#22d3ee');
+  landmark(PLACES.safehouse, 110, 90, '#3f5a44', '#a3e635');
+  // The Docks is a pier building on the beach, not a solid block.
+  buildings.push({
+    id: id++, x: PLACES.docks.x - 90, y: PLACES.docks.y - 46, w: 180, h: 92,
+    color: '#5a4632', roof: '#33291f', hgt: 1, neon: true, neonColor: '#fb923c',
+    seed: 778, landmark: 'The Docks',
+  });
+
+  // Trees in parks and along sidewalks; lamps at intersections.
+  for (const p of parks) {
+    for (let i = 0; i < 14; i++) {
+      trees.push({ x: p.x + 14 + rng.range(0, p.w - 28), y: p.y + 14 + rng.range(0, p.h - 28), r: rng.range(9, 15) });
     }
   }
-  return { seed, buildings, parks, spots, parkedSpots, rng };
-}
-
-export function isOnRoad(x, y) {
-  for (const rx of ROADS_V) if (Math.abs(x - rx) < ROAD_HALF + 8) return true;
-  for (const ry of ROADS_H) if (Math.abs(y - ry) < ROAD_HALF + 8) return true;
-  return false;
-}
-
-// Nearest point on a road centreline — used to spawn police on the street.
-export function nearestRoadPoint(x, y) {
-  let best = null, bestD = Infinity;
-  for (const rx of ROADS_V) {
-    const d = Math.abs(x - rx);
-    if (d < bestD) { bestD = d; best = { x: rx, y }; }
+  for (let i = 0; i < 90; i++) {
+    const sx = rng.pick(STREETS_X), sy = rng.range(120, 1720);
+    trees.push({ x: sx + (rng.chance(0.5) ? -52 : 52), y: sy, r: rng.range(8, 12) });
   }
-  for (const ry of ROADS_H) {
-    const d = Math.abs(y - ry);
-    if (d < bestD) { bestD = d; best = { x, y: ry }; }
+  for (const sx of STREETS_X) for (const sy of STREETS_Y) {
+    lamps.push({ x: sx + ROAD_W / 2 + 6, y: sy + ROAD_W / 2 + 6 });
   }
-  return best;
+
+  // Parked cars dotted along the kerbs, seeded so shots are stable.
+  const parkedSpots = [];
+  for (let i = 0; i < 26; i++) {
+    const vertical = rng.chance(0.5);
+    const sx = rng.pick(STREETS_X), sy = rng.pick(STREETS_Y);
+    if (vertical) {
+      parkedSpots.push({ x: sx - ROAD_W / 2 - 14, y: sy + rng.range(-140, 140), angle: Math.PI / 2 });
+    } else {
+      parkedSpots.push({ x: sx + rng.range(-140, 140), y: sy - ROAD_W / 2 - 14, angle: 0 });
+    }
+  }
+
+  return { buildings, parks, trees, lamps, bay, beach, parkedSpots, seed };
 }
 
-// Push a circle (player, ped, car) out of every building it overlaps.
-export function pushOutOfBuildings(ent, city) {
-  const r = ent.r || 14;
+// True when a point (with a small radius) is inside water.
+export function inWater(city, x, y) {
+  return y >= city.bay.y;
+}
+
+// True when a point is on a road (drivable, not sidewalk).
+export function onRoad(x, y) {
+  const near = (list) => list.some((c) => Math.abs(c - x) <= ROAD_W / 2 || Math.abs(c - y) <= ROAD_W / 2);
+  return STREETS_X.some((c) => Math.abs(x - c) <= ROAD_W / 2) || STREETS_Y.some((c) => Math.abs(y - c) <= ROAD_W / 2);
+}
+
+// Nearest street centre to a point, used to snap traffic onto roads.
+export function nearestStreet(x, y) {
+  let bx = STREETS_X[0], bd = 1e9;
+  for (const c of STREETS_X) if (Math.abs(c - x) < bd) { bd = Math.abs(c - x); bx = c; }
+  let by = STREETS_Y[0]; bd = 1e9;
+  for (const c of STREETS_Y) if (Math.abs(c - y) < bd) { bd = Math.abs(c - y); by = c; }
+  return { x: bx, y: by };
+}
+
+// Circle-vs-building collision: pushes the circle out, returns true on hit.
+export function collideBuildings(city, p, r) {
+  let hit = false;
   for (const b of city.buildings) {
-    const cx = Math.max(b.x, Math.min(ent.x, b.x + b.w));
-    const cy = Math.max(b.y, Math.min(ent.y, b.y + b.h));
-    const dx = ent.x - cx, dy = ent.y - cy;
+    const cx = Math.max(b.x, Math.min(p.x, b.x + b.w));
+    const cy = Math.max(b.y, Math.min(p.y, b.y + b.h));
+    const dx = p.x - cx, dy = p.y - cy;
     const d2 = dx * dx + dy * dy;
     if (d2 < r * r) {
+      hit = true;
       if (d2 > 0.01) {
         const d = Math.sqrt(d2);
-        ent.x = cx + (dx / d) * r; ent.y = cy + (dy / d) * r;
+        p.x = cx + (dx / d) * r;
+        p.y = cy + (dy / d) * r;
       } else {
-        ent.y = b.y - r; // centred inside: push up out
+        p.y = b.y - r;
       }
-      ent.hitBuilding = true;
     }
   }
-  // The sea is a wall: nobody drives into the bay.
-  if (ent.x > WORLD_W - 120) { ent.x = WORLD_W - 120; ent.hitBuilding = true; }
-  if (ent.x < 20) { ent.x = 20; ent.hitBuilding = true; }
-  if (ent.y < 20) { ent.y = 20; ent.hitBuilding = true; }
-  if (ent.y > WORLD_H - 20) { ent.y = WORLD_H - 20; ent.hitBuilding = true; }
+  return hit;
 }
 
-export function pointInBuilding(x, y, city) {
-  for (const b of city.buildings) if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return true;
-  return false;
+export function litWindow(x, y, seed, litRatio) {
+  return hash2(x, y, seed) < litRatio;
 }
